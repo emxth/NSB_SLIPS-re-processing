@@ -394,3 +394,21 @@ class DataInserter:
         print(f"Total Amount: {total_amount:.2f}")
         print("=" * 50)
 
+
+class FileHandler:
+    def __init__(self, input_dir):
+        self.input_dir = input_dir
+
+    def get_files(self):
+        return [f for f in self.input_dir.iterdir() if f.is_file()]
+
+    def archive_file(self, file_path):
+        archive_dir = self.input_dir / "archive"
+        archive_dir.mkdir(exist_ok=True)
+        archive_path = archive_dir / file_path.name
+
+        if archive_path.exists():
+            archive_path.unlink()
+            
+        file_path.rename(archive_path)
+
