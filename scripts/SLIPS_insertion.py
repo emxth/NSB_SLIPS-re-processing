@@ -173,3 +173,224 @@ class RecordParser:
 
         return transactions
 
+
+class DataInserter:
+    def __init__(self, db_manager, config_dir: Path):
+        self.db_manager = db_manager
+        self.config_dir = config_dir # Store the config_dir (which is base_path / "config")
+        self.invalid_transactions = []
+        self.current_file_type = None
+
+    def set_file_type(self, file_type):
+        """Set the current file type (INW or OUT)"""
+        self.current_file_type = file_type
+
+    def insert_file_header(self, cursor, prefix, header):
+        # Set the current file type
+        self.set_file_type(prefix)
+
+        # Show warning for INW files
+        if prefix == "INW":
+            print(
+                "WARNING: Security check field and hash total calculation may be incorrect or can occur errors."
+            )
+
+        query = f"""
+        INSERT INTO {prefix}_FileHeader (BankControlId, FieldId, FileDate, BankCode, NumBatches, NumTransactions, Blank, FileName)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = (
+            header["BankControlId"],
+            header["FieldId"],
+            header["Date"],
+            header["BankCode"],
+            header["NoOfBatches"],
+            header["NoOfTransactions"],
+            " " * 155,
+            header["FileName"],
+        )
+        cursor.execute(query, params)
+
+    def insert_branch_header(self, cursor, prefix, header):
+        query = f"""
+        INSERT INTO {prefix}_BranchHeader (BranchControlId, FieldId, FileDate, BankCode, BranchCode, CreditTotal, NumCreditItems, DebitTotal, NumDebitItems, AccountHashTotal, Blank, FileName)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = (
+            header["BranchControlId"],
+            header["FieldId"],
+            header["Date"],
+            header["BankCode"],
+            header["BranchCode"],
+            header["CreditTotal"],
+            header["NoOfCreditItems"],
+            header["DebitTotal"],
+            header["NoOfDebitItems"],
+            header["HashTotal"],
+            " " * 101,
+            header["FileName"],
+        )
+        cursor.execute(query, params)
+
+    def validate_transaction(self, record):
+        def is_valid_account(acc):
+            acc_stripped = acc.strip()
+            # Check if account is only numeric characters
+            return acc_stripped.isdigit()
+
+        return is_valid_account(record["DestAccount"]) and is_valid_account(
+            record["OriginatingAccountNo"]
+        )
+
+    def insert_transaction(self, cursor, prefix, record):
+        # Only validate and track invalid transactions for OUT files
+        if prefix == "OUT" and (not self.validate_transaction(record)):
+            self.invalid_transactions.append(record)
+            return  # Skip insertion for invalid transactions in OUT files
+
+        # For INW files, insert all transactions without validation
+        query = f"""
+        INSERT INTO {prefix}_Transaction (
+            Transaction_Id, Destination_Bank_No, Destination_Branch_No, Destination_Ac_No,
+            Destination_Ac_Name, Transaction_Code, Return_Code, Filler, Original_Transaction_Date,
+            Amount, Currency_Code, Originating_Bank_No, Originating_Branch_No,
+            Originating_Ac_No, Originating_Ac_Name, Particular, Reference, Value_Date,
+            Security_Check_Field, Blank, FileName, AmountInt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = (
+            record["TransactionId"],
+            record["DestBank"],
+            record["DestBranch"],
+            record["DestAccount"],
+            record["DestName"],
+            record["TransactionCode"],
+            record["ReturnCode"],
+            record["Filler"],
+            record["ReturnDate"],
+            record["Amount"],
+            record["Currency"],
+            record["OriginatingBankNo"],
+            record["OriginatingBranchNo"],
+            record["OriginatingAccountNo"],
+            record["OriginatorAccountName"],
+            record["Particular"],
+            record["Reference"],
+            record["ValueDate"],
+            record["SecurityCheck"],
+            " " * 30,
+            record["FileName"],
+            record["AmountInt"],
+        )
+        cursor.execute(query, params)
+
+    def export_invalid_transactions(self, file_name, total_transactions_processed):
+        if self.current_file_type != "OUT":
+            print(
+                f"INFO: No invalid transactions exported for {self.current_file_type} file type"
+            )
+            return
+
+        base_path = self.config_dir.parent 
+        output_dir = base_path / "output"
+
+        try:
+            output_dir.mkdir(exist_ok=True)
+        except Exception as e:
+            print(f"ERROR: Could not create folder {output_dir} → {e}")
+            return
+
+        # Change extension to .txt
+        output_file = output_dir / f"invalid_transactions_{Path(file_name).stem}.txt"
+
+        if not self.invalid_transactions:
+            print("No invalid transactions found for OUT file.")
+            return
+
+        # Add error reasons
+        for transaction in self.invalid_transactions:
+            errors = []
+            if not transaction["DestAccount"].strip().isdigit():
+                errors.append("DestAccount invalid")
+            if not transaction["OriginatingAccountNo"].strip().isdigit():
+                errors.append("OriginatingAccountNo invalid")
+            transaction["Error_Reason"] = "; ".join(errors)
+
+        try:
+            with open(output_file, "w", encoding="utf-8") as txtfile:
+                # Get ValueDate from first transaction (assuming all have same ValueDate)
+                value_date = (
+                    self.invalid_transactions[0]["ValueDate"]
+                    if self.invalid_transactions
+                    else ""
+                )
+
+                # Write header
+                txtfile.write(f"DATE\t\t: {value_date}\n")
+                txtfile.write(f"OWD FILE NAME\t: {file_name}\n\n")
+
+                # Write column headers with tabs
+                txtfile.write("-" * 177 + "\n")
+                txtfile.write(
+                    "FROM AC\t\tFROM BRANCH\tAMOUNT\t\tTO AC\t\tTO BANK\t\tTO BRANCH\tTO NAME\t\t\tTC\tREJECT REASON\n"
+                )
+                txtfile.write("-" * 177 + "\n")
+
+                # Write invalid transactions (tab-separated)
+                for transaction in self.invalid_transactions:
+                    # Convert amount to decimal format (divide by 100, 2 decimal places)
+                    try:
+                        # Remove any non-numeric characters from amount first
+                        amount_str = transaction["Amount"].strip()
+                        # Extract numeric part (remove currency symbols, etc.)
+                        numeric_part = "".join(filter(str.isdigit, amount_str))
+                        if numeric_part:
+                            amount_decimal = float(numeric_part) / 100
+                            formatted_amount = f"{amount_decimal:.2f}"
+                        else:
+                            formatted_amount = "0.00"
+                    except (ValueError, TypeError):
+                        formatted_amount = "0.00"
+
+                    line = (
+                        f"{transaction['OriginatingAccountNo'].strip()}\t"
+                        f"{transaction['OriginatingBranchNo'].strip()}\t\t"
+                        f"{formatted_amount}\t\t"
+                        f"{transaction['DestAccount'].strip()}\t"
+                        f"{transaction['DestBank'].strip()}\t\t"
+                        f"{transaction['DestBranch'].strip()}\t\t"
+                        f"{transaction['DestName']}\t"
+                        f"{transaction['TransactionCode'].strip()}\t"
+                        f"{transaction['Error_Reason']}\n"
+                    )
+                    txtfile.write(line)
+
+                # Write summary statistics
+                valid_count = total_transactions_processed - len(
+                    self.invalid_transactions
+                )
+                invalid_count = len(self.invalid_transactions)
+
+                txtfile.write(f"\nVALID TXN\t: {valid_count}\n")
+                txtfile.write(f"INVALID TXN\t: {invalid_count}\n")
+                txtfile.write("-" * 25 + "\n")
+                txtfile.write(f"TOTAL\t\t: {total_transactions_processed}\n")
+
+            print(f"Invalid OUT transactions exported to {output_file}")
+
+        except Exception as e:
+            print(f"ERROR: Failed to write TXT file {output_file} → {e}")
+
+    def insertion_statistics(self, cursor, prefix):
+        query = (
+            f"SELECT COUNT(*), SUM(CAST(AmountInt AS BIGINT)) FROM {prefix}_Transaction"
+        )
+        cursor.execute(query)
+        result = cursor.fetchone()
+        transaction_count = result[0] or 0
+        total_amount = (result[1] or 0) / 100
+
+        print(f"Total transactions inserted: {transaction_count}")
+        print(f"Total Amount: {total_amount:.2f}")
+        print("=" * 50)
+
