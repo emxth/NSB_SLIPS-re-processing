@@ -185,3 +185,13 @@ class CodeMappingService:
             cursor.close()
             conn.close()
 
+
+# ---------------------- Formatting helpers ----------------------
+class Formatters:
+    @staticmethod
+    def format_number(value: int, width: int) -> str:
+        return str(value).zfill(width)
+
+    @staticmethod
+    def format_amount(value: int, width: int) -> str:
+        return str(value).zfill(width)
