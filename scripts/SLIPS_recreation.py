@@ -674,3 +674,108 @@ class SecurityFieldCalculator:
         U = sum_chunks3x3(FQ)
         return trunc_left(str(R + S + T + U), 6)
 
+
+class TransactionSecurityUpdater:
+    def __init__(self, code_service: CodeMappingService):
+        self.code_service = code_service
+
+    def update_security_fields(self, table_prefix: str) -> bool:
+        conn = Database.get_connection()
+        if not conn:
+            return False
+        cursor = conn.cursor()
+        try:
+            # Ensure no unknown transaction codes remain (same logic)
+            placeholders = ",".join(
+                ["?" for _ in self.code_service.transaction_codes.keys()]
+            )
+            check_query = f"""
+                SELECT DISTINCT Transaction_Code
+                FROM {table_prefix}_Transaction
+                WHERE Transaction_Code NOT IN ({placeholders})
+            """
+            cursor.execute(
+                check_query, list(self.code_service.transaction_codes.keys())
+            )
+            unknown_codes_result = cursor.fetchall()
+            if unknown_codes_result:
+                unknown_codes = set(
+                    str(code[0]).strip() for code in unknown_codes_result if code[0]
+                )
+                if unknown_codes:
+                    print(
+                        f"Warning: Found {len(unknown_codes)} unknown transaction codes before security field calculation:"
+                    )
+                    for code in unknown_codes:
+                        print(f"  - '{code}'")
+                    print(
+                        "Please update transaction codes mapping first to ensure correct security field calculation."
+                    )
+                    return False
+
+            select_query = f"""
+                SELECT
+                    Id,
+                    Amount,
+                    Originating_Ac_No,
+                    Destination_Ac_No,
+                    Destination_Bank_No,
+                    Destination_Branch_No,
+                    Filler,
+                    Return_Code,
+                    Transaction_Code
+                FROM {table_prefix}_Transaction
+            """
+            cursor.execute(select_query)
+            transactions = cursor.fetchall()
+            updates_made = 0
+            errors = 0
+            for trans in transactions:
+                try:
+                    id_ = trans[0]
+                    amount = str(trans[1] or "")
+                    org_account_no = str(trans[2] or "")
+                    des_account_no = str(trans[3] or "")
+                    des_bank = str(trans[4] or "")
+                    des_branch = str(trans[5] or "")
+                    filler = str(trans[6] or " ")
+                    ret_code = str(trans[7] or "00")
+                    tx_code = str(trans[8] or "")
+
+                    security_field = SecurityFieldCalculator.compute(
+                        bankPW=Settings.BANK_PW,
+                        lankaClearPW=Settings.LANKA_CLEAR_PW,
+                        amount=amount,
+                        orgAccountNo=org_account_no,
+                        desAccountNo=des_account_no,
+                        des_Bank=des_bank,
+                        des_branch=des_branch,
+                        fill_a=filler,
+                        ret_code=ret_code,
+                        txCode=tx_code,
+                    )
+
+                    update_query = f"""
+                        UPDATE {table_prefix}_Transaction
+                        SET Security_Check_Field = ?
+                        WHERE Id = ?
+                    """
+                    cursor.execute(update_query, (security_field, id_))
+                    updates_made += 1
+                except Exception as e:
+                    print(
+                        f"  - Error computing security field for transaction {trans[0]}: {e}"
+                    )
+                    errors += 1
+                    continue
+            conn.commit()
+            if errors > 0:
+                print(f"  - Failed to update {errors} transactions due to errors.")
+            return True
+        except Exception as e:
+            print(f"Error updating security check fields for {table_prefix}: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
