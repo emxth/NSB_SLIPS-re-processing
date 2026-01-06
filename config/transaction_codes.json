@@ -1,0 +1,102 @@
+{
+  "11": {
+    "type": "C",
+    "desc": "Call Money Transactions"
+  },
+  "12": {
+    "type": "C",
+    "desc": "Foreign Exchange Settlements"
+  },
+  "16": {
+    "type": "C",
+    "desc": "Call Money Settlement"
+  },
+  "21": {
+    "type": "C",
+    "desc": "Standing Orders"
+  },
+  "22": {
+    "type": "C",
+    "desc": "Insurance"
+  },
+  "23": {
+    "type": "C",
+    "desc": "Salaries"
+  },
+  "24": {
+    "type": "C",
+    "desc": "Pensions"
+  },
+  "25": {
+    "type": "C",
+    "desc": "E. P. F. Refunds"
+  },
+  "26": {
+    "type": "C",
+    "desc": "E. T. F."
+  },
+  "27": {
+    "type": "C",
+    "desc": "Purchase of Foreign Currency Notes"
+  },
+  "28": {
+    "type": "C",
+    "desc": "Cover Payment for Money Transfers (bank to bank)"
+  },
+  "29": {
+    "type": "C",
+    "desc": "Settlement of Foreign Drafts Realization"
+  },
+  "31": {
+    "type": "D",
+    "desc": "Electricity Bills"
+  },
+  "32": {
+    "type": "D",
+    "desc": "Telephone Bills"
+  },
+  "33": {
+    "type": "D",
+    "desc": "Water Bills"
+  },
+  "34": {
+    "type": "D",
+    "desc": "Insurance (Debit)"
+  },
+  "35": {
+    "type": "D",
+    "desc": "EPF Contribution Receipts"
+  },
+  "36": {
+    "type": "D",
+    "desc": "LankaClear Charges"
+  },
+  "51": {
+    "type": "C",
+    "desc": "Outward Bills Proceeds"
+  },
+  "52": {
+    "type": "C",
+    "desc": "Customer Transfers"
+  },
+  "53": {
+    "type": "C",
+    "desc": "Inward Foreign Remittances"
+  },
+  "55": {
+    "type": "C",
+    "desc": "Debenture Interest / Dividend"
+  },
+  "56": {
+    "type": "C",
+    "desc": "Stock Transactions"
+  },
+  "57": {
+    "type": "C",
+    "desc": "IPO Refunds"
+  },
+  "77": {
+    "type": "C",
+    "desc": ""
+  }
+}
