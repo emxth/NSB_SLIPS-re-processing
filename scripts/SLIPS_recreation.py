@@ -594,3 +594,83 @@ class BranchInspector:
         finally:
             conn.close()
 
+
+# ---------------------- Security Field ----------------------
+class SecurityFieldCalculator:
+    @staticmethod
+    def compute(
+        bankPW: str,
+        lankaClearPW: str,
+        amount: str,
+        orgAccountNo: str,
+        desAccountNo: str,
+        des_Bank: str,
+        des_branch: str,
+        fill_a: str,
+        ret_code: str,
+        txCode: str,
+    ) -> str:
+        def digits(s: Optional[str]) -> str:
+            return "".join(ch for ch in (s or "") if ch.isdigit())
+
+        def assert_8_digits(label: str, s: str):
+            if not s or len(s) != 8 or not s.isdigit():
+                raise ValueError(f"{label} must be exactly 8 digits.")
+
+        def trunc_right(s: Optional[str], length: int) -> str:
+            if not s:
+                return "0" * length
+            t = s if len(s) <= length else s[-length:]
+            return t.zfill(length)
+
+        def trunc_left(s: Optional[str], length: int) -> str:
+            if not s:
+                return "0" * length
+            t = s if len(s) <= length else s[:length]
+            return t.zfill(length)
+
+        def add_strings(x: str, y: str) -> str:
+            return str(int(x or "0") + int(y or "0"))
+
+        def sum_chunks4x3(twelve_digits: str) -> int:
+            s = twelve_digits.zfill(12)
+            return int(s[:4]) + int(s[4:8]) + int(s[8:12])
+
+        def sum_chunks3x3(nine_digits: str) -> int:
+            s = nine_digits.zfill(9)
+            return int(s[:3]) + int(s[3:6]) + int(s[6:9])
+
+        bankPW = digits(bankPW)
+        lankaClearPW = digits(lankaClearPW)
+        assert_8_digits("BankPW", bankPW)
+        assert_8_digits("LankaClearPW", lankaClearPW)
+        a = lankaClearPW
+        b = bankPW
+        a9to12 = trunc_right(add_strings(a[:4], b[4:8]), 4)
+        b9to12 = trunc_right(add_strings(b[:4], a[4:8]), 4)
+        Temp1 = a + a9to12
+        Temp2 = b + b9to12
+        C = trunc_right(add_strings(Temp1, Temp2), 12)
+        Temp3 = C[:4]
+        Temp4 = C[4:8]
+        Temp5 = C[8:12]
+        F = trunc_right(add_strings(add_strings(Temp3, Temp4), Temp5), 4)
+        A = digits(amount)
+        I = digits(orgAccountNo)
+        J = digits(desAccountNo)
+        L = des_Bank + des_branch + ret_code + fill_a + txCode
+        AC = trunc_right(add_strings(A, C), 12)
+        IC = trunc_right(add_strings(I, C), 12)
+        JC = trunc_right(add_strings(J, C), 12)
+        LC = trunc_right(add_strings(L, C), 12)
+        f_val = int(F)
+        FM = trunc_left(str(f_val * sum_chunks4x3(AC)), 9)
+        FN = trunc_left(str(f_val * sum_chunks4x3(IC)), 9)
+        FP = trunc_left(str(f_val * sum_chunks4x3(JC)), 9)
+        FQ = trunc_left(str(f_val * sum_chunks4x3(LC)), 9)
+        R = sum_chunks3x3(FM)
+        S = sum_chunks3x3(FN)
+        T = sum_chunks3x3(FP)
+        U = sum_chunks3x3(FQ)
+        return trunc_left(str(R + S + T + U), 6)
+
