@@ -522,3 +522,75 @@ class BranchService:
             print(f"Error processing branch {branch_code}: {e}")
             return False
 
+
+class BranchInspector:
+    @staticmethod
+    def _branch_field(table_prefix: str) -> str:
+        return (
+            "Originating_Branch_No"
+            if table_prefix == "OUT"
+            else "Destination_Branch_No"
+        )
+
+    def check_and_filter(
+        self, bank_code: str, table_prefix: str
+    ) -> Tuple[bool, List[str], List[Any]]:
+        conn = Database.get_connection()
+        cursor = conn.cursor()
+        try:
+            branch_headers_query = f"""
+                SELECT bh.Id, bh.BranchControlId, bh.FieldId, bh.FileDate, bh.BankCode,
+                       bh.BranchCode, bh.CreditTotal, bh.NumCreditItems, bh.DebitTotal,
+                       bh.NumDebitItems, bh.AccountHashTotal, bh.Status, bh.FileName
+                FROM {table_prefix}_BranchHeader bh
+                WHERE bh.BankCode = ?
+                ORDER BY bh.Id
+            """
+            cursor.execute(branch_headers_query, (bank_code,))
+            branch_headers = cursor.fetchall()
+            if not branch_headers:
+                return False, [], []
+            problems: List[str] = []
+            filtered: List[Any] = []
+            branch_field = self._branch_field(table_prefix)
+
+            for bh in branch_headers:
+                branch_code = bh[5]
+                count_query = f"""
+                    SELECT COUNT(*)
+                    FROM {table_prefix}_Transaction
+                    WHERE {branch_field} = ?
+                """
+                cursor.execute(count_query, (branch_code,))
+                total_count = cursor.fetchone()[0]
+
+                non_zero_query = f"""
+                    SELECT COUNT(*)
+                    FROM {table_prefix}_Transaction
+                    WHERE {branch_field} = ?
+                      AND Amount NOT IN ('0', '000000000000')
+                      AND Amount IS NOT NULL
+                      AND Amount != ''
+                """
+                cursor.execute(non_zero_query, (branch_code,))
+                non_zero_count = cursor.fetchone()[0]
+
+                if total_count == 0:
+                    problems.append(f"Branch {branch_code} has 0 transactions")
+                elif non_zero_count == 0:
+                    problems.append(
+                        f"Branch {branch_code} has only zero-amount transactions ('0' or '000000000000')"
+                    )
+                elif total_count == 1 and non_zero_count == 0:
+                    problems.append(
+                        f"Branch {branch_code} has only 1 transaction with amount '0' or '000000000000'"
+                    )
+                else:
+                    filtered.append(bh)
+            return len(problems) > 0, problems, filtered
+        except Exception as e:
+            print(f"Error checking branch transactions: {e}")
+            return True, [f"Error checking transactions: {e}"], []
+        finally:
+            conn.close()
+
