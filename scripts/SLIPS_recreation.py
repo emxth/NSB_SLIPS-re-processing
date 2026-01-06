@@ -340,3 +340,185 @@ class TransactionAnalyzer:
         debit_count = len(debit_values)
         return credit_total, credit_count, debit_total, debit_count, hash_total
 
+
+# ---------------------- Branch & Header services ----------------------
+class BranchService:
+    def __init__(self, analyzer, code_service):
+        self.analyzer = analyzer
+        self.code_service = code_service
+
+    @staticmethod
+    def _branch_field(table_prefix: str) -> str:
+        return (
+            "Originating_Branch_No"
+            if table_prefix == "OUT"
+            else "Destination_Branch_No"
+        )
+
+    def update_branch_status_and_totals(
+        self, file_header_id: int, bank_code: str, table_prefix: str
+    ) -> bool:
+        max_retries = 3
+        for retry in range(max_retries):
+            result = self._process_branches_with_refetch(
+                file_header_id, bank_code, table_prefix, retry
+            )
+            
+            if result is True:
+                return True
+            elif result == "COMPLETE":
+                return True
+            elif result == "REFETCH_NEEDED":
+                sleep_time.sleep(2)  # Wait for database updates to settle
+                continue
+            else:
+                return False
+        
+        print(f"Max retries ({max_retries}) exceeded")
+        return False
+
+    def _process_branches_with_refetch(
+        self, file_header_id: int, bank_code: str, table_prefix: str, attempt: int
+    ):
+        """Process branches with proper error handling and refetch support"""
+        conn = Database.get_connection()
+        if not conn:
+            print("Failed to connect to database.")
+            return False
+            
+        cursor = conn.cursor()
+        
+        try:
+            # Fetch all pending branches
+            cursor.execute(
+                f"""
+                SELECT Id, BranchCode
+                FROM {table_prefix}_BranchHeader
+                WHERE Status = 0 AND BankCode = ?
+                ORDER BY Id
+                """,
+                (bank_code,)
+            )
+            pending = cursor.fetchall()
+
+            if not pending:
+                print("No pending branches.")
+                return "COMPLETE"
+
+            print(f"Found {len(pending)} branches to process")
+            branch_field = self._branch_field(table_prefix)
+
+            # Process each branch
+            for branch_header_id, branch_code in pending:
+                result = self._process_single_branch(
+                    conn, cursor, branch_header_id, branch_code, 
+                    bank_code, table_prefix, branch_field
+                )
+                
+                if result == "REFETCH_NEEDED":
+                    # Rollback any partial changes and signal refetch needed
+                    conn.rollback()
+                    return "REFETCH_NEEDED"
+                elif not result:
+                    # Error processing branch
+                    conn.rollback()
+                    return False
+            
+            # Commit all updates
+            conn.commit()
+            return "COMPLETE"
+            
+        except Exception as e:
+            print(f"Error updating branch status: {e}")
+            if conn:
+                conn.rollback()
+            return False
+            
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+    def _process_single_branch(
+        self, main_conn, main_cursor, branch_header_id: int, branch_code: str,
+        bank_code: str, table_prefix: str, branch_field: str
+    ):
+        """Process a single branch, returns True, "REFETCH_NEEDED", or False"""
+        try:
+            # Create new connection for this branch's transactions
+            branch_conn = Database.get_connection()
+            if not branch_conn:
+                print(f"Failed to connect for branch {branch_code}")
+                return False
+                
+            branch_cursor = branch_conn.cursor()
+            
+            try:
+                # Fetch transactions for this branch
+                branch_cursor.execute(
+                    f"""
+                    SELECT Transaction_Code, Amount, Destination_Ac_No
+                    FROM {table_prefix}_Transaction
+                    WHERE {branch_field} = ?
+                    """,
+                    (branch_code,)
+                )
+                transactions = branch_cursor.fetchall()
+                
+                if not transactions:
+                    print(f"Branch {branch_code}: 0 transactions (status updated)")
+                    # Update status only for empty branches
+                    main_cursor.execute(
+                        f"""
+                        UPDATE {table_prefix}_BranchHeader
+                        SET Status = 1
+                        WHERE Id = ?
+                        """,
+                        (branch_header_id,)
+                    )
+                    return True
+                    
+                # Analyze transactions
+                result = self.analyzer.calculate_totals_and_hash(
+                    transactions, table_prefix, bank_code, branch_code
+                )
+                
+                # Handle REFETCH_NEEDED scenario
+                if isinstance(result, tuple) and result[0] == "REFETCH_NEEDED":
+                    return "REFETCH_NEEDED"
+                
+                # Normal result - update branch totals
+                credit_total, credit_count, debit_total, debit_count, hash_total = result
+                
+                main_cursor.execute(
+                    f"""
+                    UPDATE {table_prefix}_BranchHeader
+                    SET CreditTotal = ?, NumCreditItems = ?,
+                        DebitTotal = ?, NumDebitItems = ?,
+                        AccountHashTotal = ?, Status = 1
+                    WHERE Id = ?
+                    """,
+                    (
+                        credit_total,
+                        credit_count,
+                        debit_total,
+                        debit_count,
+                        hash_total,
+                        branch_header_id,
+                    )
+                )
+                
+                return True
+                
+            finally:
+                # Always close branch connection
+                if branch_cursor:
+                    branch_cursor.close()
+                if branch_conn:
+                    branch_conn.close()
+                    
+        except Exception as e:
+            print(f"Error processing branch {branch_code}: {e}")
+            return False
+
