@@ -779,3 +779,99 @@ class TransactionSecurityUpdater:
         finally:
             conn.close()
 
+
+# ---------------------- Value date & cleanup (OUT) ----------------------
+class ValueDateService:
+    def __init__(self):
+        pass
+
+    def _is_valid_date(self, value_date: str) -> bool:
+        if len(value_date) != 6 or not value_date.isdigit():
+            print("Error: Value date must be exactly 6 digits in YYMMDD format.")
+            return False
+        
+        year = int(value_date[:2])
+        month = int(value_date[2:4])
+        day = int(value_date[4:])
+
+        if not (1 <= day <= 31):
+            print("Error: Day must be between 01 and 31.")
+            return False
+        if not (1 <= month <= 12):
+            print("Error: Month must be between 01 and 12.")
+            return False
+        if not (0 <= year <= 99):
+            print("Error: Year must be between 00 and 99.")
+            return False
+        
+        return True
+
+    def _load_holidays(self) -> set:
+        path = Settings.path_config("bank_holidays.json")
+        with open(path, "r") as f:
+            data = json.load(f)
+        return {
+            datetime(item["year"], item["month"], item["day"]).date() for item in data
+        }
+
+    def _next_working_day(self, date_obj, holidays):
+        date_obj += timedelta(days=1)
+
+        while date_obj.weekday() >= 5 or date_obj in holidays:
+            date_obj += timedelta(days=1)
+
+        return date_obj
+
+    def _suggested_dates(self) -> Tuple[str, str]:
+        holidays = self._load_holidays()
+        now = datetime.now()
+        today = now.date()
+
+        # Determine value date
+        if now.time() >= Settings.CUTOFF_TIME:
+            val = self._next_working_day(today, holidays)
+        else:
+            if today.weekday() >= 5 or today in holidays:
+                val = self._next_working_day(today, holidays)
+            else:
+                val = today
+
+        # Salary suggestion should be the SAME day as value date
+        sal = val
+
+        return val.strftime("%y%m%d"), sal.strftime("%y%m%d")
+
+    def prompt_value_dates(self) -> Tuple[str, str]:
+        print("" + "=" * 50)
+        print("OUT FILE PROCESSING - VALUE DATE INPUT")
+        print("=" * 50)
+
+        suggest_val, suggest_sal = self._suggested_dates()
+
+        while True:
+            val_input = input(
+                f"Enter Value Date (YYMMDD) or press Enter [suggest: {suggest_val}] : "
+            ).strip()
+            if not val_input:
+                val_input = suggest_val
+                break
+            if self._is_valid_date(val_input):
+                break
+
+        holidays = self._load_holidays()
+        value_date_obj = datetime.strptime("20" + val_input, "%Y%m%d").date()
+        new_salary_suggestion = value_date_obj.strftime("%y%m%d")
+
+        while True:
+            sal_input = input(
+                f"Enter Salary Value Date (YYMMDD) or press Enter [suggest: {new_salary_suggestion}] : "
+            ).strip()
+            
+            if not sal_input:
+                sal_input = new_salary_suggestion
+                break
+            if self._is_valid_date(sal_input):
+                break
+
+        return val_input, sal_input
+
