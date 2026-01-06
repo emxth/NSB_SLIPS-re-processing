@@ -412,3 +412,78 @@ class FileHandler:
             
         file_path.rename(archive_path)
 
+
+class SLIPSProcessor:
+    def __init__(self, config_dir: Path, input_dir: Path):
+        self.config_loader = ConfigLoader(config_dir)
+        self.file_handler = FileHandler(input_dir)
+        self.parser = RecordParser(self.config_loader.transaction_codes)
+
+        # Use SQLite database in root directory
+        root_dir = config_dir.parent  # This should be the base_path
+        db_path = root_dir / "SLIPS.db"
+        self.db_manager = DatabaseManager(str(db_path))
+
+    def process(self):
+        files = self.file_handler.get_files()
+
+        if not files:
+            print("No files found.")
+            return
+
+        file_path = files[0]
+        with open(file_path, "r", encoding="utf-8") as f:
+            dataset = f.read()
+
+        parsed_data = self.parser.parse_dataset(dataset, file_path.name)
+
+        if not parsed_data:
+            print("No valid data found.")
+            return
+
+        cursor = self.db_manager.connect()
+
+        if cursor:
+            inserter = DataInserter(self.db_manager, self.config_loader.config_dir)
+            total_transactions = 0
+
+            for group in parsed_data:
+                # In database fieldId = "IN " - INWARD
+                # In database fieldId = "OUT" - OUTWARD
+                prefix = "INW" if group["type"] == "IN " else "OUT"
+                self.db_manager.clear_tables(cursor, prefix)
+                inserter.insert_file_header(cursor, prefix, group["header1"])
+
+                for branch in group["branches"]:
+                    inserter.insert_branch_header(cursor, prefix, branch["header2"])
+                    total_transactions += len(
+                        branch["data"]
+                    )  # Count total transactions
+
+                    for record in branch["data"]:
+                        inserter.insert_transaction(cursor, prefix, record)
+
+            inserter.insertion_statistics(cursor, prefix)
+            self.db_manager.commit_and_close()
+
+            # Pass total transactions count to export method
+            inserter.export_invalid_transactions(file_path.name, total_transactions)
+
+        self.file_handler.archive_file(file_path)
+
+
+def main(base_path: Path):
+    """Main function to be called from other files"""
+    processor = SLIPSProcessor(
+        base_path / "config",  # Absolute path to config folder
+        base_path / "input"    # Absolute path to input folder
+    )
+    processor.process()
+
+
+if __name__ == "__main__":
+    def get_local_base_path() -> Path:
+        """Helper to get base path when running outside the main application structure."""
+        return Path(__file__).parent.parent 
+        
+    main(get_local_base_path())
