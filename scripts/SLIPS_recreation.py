@@ -195,3 +195,148 @@ class Formatters:
     @staticmethod
     def format_amount(value: int, width: int) -> str:
         return str(value).zfill(width)
+
+
+# ---------------------- Transaction analysis ----------------------
+class TransactionAnalyzer:
+    def __init__(self, code_service):
+        self.codes = code_service.transaction_codes
+        self.code_service = code_service
+
+    def calculate_totals_and_hash(
+        self,
+        transactions: List[Tuple[str, Any, str]],
+        table_prefix: str,
+        bank_code: str,
+        branch_code: Optional[str] = None,
+    ):
+        credit_values = []
+        debit_values = []
+        hash_total = 0
+        unknown_codes = set()
+
+        for transaction_code, amount, dest_account in transactions:
+            # Skip zero amounts ('0' or '000000000000')
+            if amount in ["0", "000000000000"]:
+                continue
+            # Normalize amount to int
+            try:
+                if amount is None:
+                    amount_int = 0
+                elif isinstance(amount, str):
+                    amount_int = int(amount.strip()) if amount.strip() else 0
+                elif isinstance(amount, int):
+                    amount_int = amount
+                elif isinstance(amount, float):
+                    amount_int = int(amount)
+                else:
+                    amount_int = 0
+            except (ValueError, TypeError):
+                amount_int = 0
+
+            # Hash total from numeric part of destination account
+            try:
+                if dest_account and isinstance(dest_account, str):
+                    account_numeric = "".join(filter(str.isdigit, dest_account))
+                    if account_numeric:
+                        hash_total += int(account_numeric)
+            except (ValueError, TypeError):
+                pass
+
+            code_str = str(transaction_code).strip() if transaction_code else ""
+            if code_str in self.codes:
+                tx_type = self.codes[code_str].get("type", "").upper()
+                if tx_type == "C":
+                    credit_values.append(amount_int)
+                elif tx_type == "D":
+                    debit_values.append(amount_int)
+            else:
+                if code_str:
+                    unknown_codes.add(code_str)
+
+        # Unknown transaction code handling (prompt + DB update + refetch)
+        if unknown_codes:
+            print("" + "=" * 60)
+            print("ERROR: Unknown transaction codes found:")
+            for code in sorted(unknown_codes):
+                print(f"  - Transaction Code: '{code}'")
+            print("Available mappings from transaction_codes_mapping.json:")
+            mapping = self.code_service._load_transaction_code_mappings()
+            applicable = []
+            for _, m in mapping.items():
+                old_code = str(m.get("old", ""))
+                new_code = str(m.get("new", ""))
+                if old_code in unknown_codes:
+                    applicable.append((old_code, new_code))
+            
+            if applicable:
+                for old_code, new_code in applicable:
+                    print(f"  - '{old_code}' -> '{new_code}'")
+                print("Do you want to update the database with these mappings?")
+                print(
+                    "This will update transaction codes in the database according to the mapping file."
+                )
+                choice = (
+                    input("Enter 'yes' to update and continue, or 'no' to abort: ")
+                    .strip()
+                    .lower()
+                )
+                if choice in ["yes", "y"]:
+                    success = self.code_service.update_transaction_codes_in_database(
+                        unknown_codes, table_prefix
+                    )
+                    if success:
+                        # For SQLite, we need to close connections to avoid locking
+                        # Database.reset_pooling()  # Remove or adjust if using SQLite
+                        sleep_time.sleep(2)  # Shorter delay for SQLite
+                        
+                        if branch_code:
+                            conn = Database.get_connection()
+                            if conn:
+                                cursor = conn.cursor()
+                                branch_field = (
+                                    "Originating_Branch_No"
+                                    if table_prefix == "OUT"
+                                    else "Destination_Branch_No"
+                                )
+                                q = f"""
+                                    SELECT Transaction_Code, Amount, Destination_Ac_No
+                                    FROM {table_prefix}_Transaction
+                                    WHERE {branch_field} = ?
+                                """
+                                cursor.execute(q, (branch_code,))
+                                updated = cursor.fetchall()
+                                conn.close()
+
+                                # RETURN SPECIAL SIGNAL TO CALLER
+                                return ("REFETCH_NEEDED", updated)
+                            else:
+                                print(
+                                    "Failed to establish new database connection for refetching"
+                                )
+                                sys.exit(1)
+                        else:
+                            print(
+                                "No branch code available for refetching. Continuing with current data."
+                            )
+                            # Even without branch code, signal that refetch is needed
+                            return ("REFETCH_NEEDED", [])
+                    else:
+                        print("Failed to update database. Aborting process.")
+                        sys.exit(1)
+                else:
+                    print("Process aborted by user.")
+                    sys.exit(1)
+            else:
+                print("No mappings found for the unknown transaction codes.")
+                print(
+                    "Please update the transaction_codes.json or transaction_codes_mapping.json file and try again."
+                )
+                sys.exit(1)
+
+        credit_total = sum(credit_values)
+        credit_count = len(credit_values)
+        debit_total = sum(debit_values)
+        debit_count = len(debit_values)
+        return credit_total, credit_count, debit_total, debit_count, hash_total
+
